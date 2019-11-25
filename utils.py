@@ -1,3 +1,6 @@
+##########################
+## DALI DataLoaders
+##########################
 import math
 from itertools import chain
 import torch
@@ -35,7 +38,8 @@ class Chain():
     def __iter__(self): return chain(*self.dls)
     def __len__(self): return sum(len(dl) for dl in self.dls)
 
-class MockV1DataBunch(): #adaptor to fastai v1 databunch api
+class MockV1DataBunch(): 
+    #adaptor to fastai v1 databunch api
     def __init__(self, train_dl, valid_dl, path='dummy', empty_val=False):
         self.train_dl = train_dl
         if not hasattr(train_dl, 'dataset'): train_dl.dataset = 'dummy'
@@ -46,3 +50,87 @@ class MockV1DataBunch(): #adaptor to fastai v1 databunch api
         self.empty_val = empty_val
     def add_tfm(self, tfm): pass
     def remove_tfm(self, tfm): pass
+
+##########################
+## DALI Imagenet Pipeline
+##########################
+import nvidia.dali.ops as ops
+import nvidia.dali.types as types
+
+imagenet_stats = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+
+def imagenet_train_graph(data_dir, size, random_aspect_ratio, random_area, 
+                interp_type=types.INTERP_TRIANGULAR,
+                stats=imagenet_stats):
+    inputs = ops.FileReader(file_root=data_dir, random_shuffle=True)
+    decode = ops.ImageDecoderRandomCrop(device='mixed',
+            random_aspect_ratio=random_aspect_ratio, random_area=random_area)
+    resize = ops.Resize(device='gpu', resize_x=size, resize_y=size, 
+                        interp_type=interp_type)
+    mean, std = [[x*255 for x in stat] for stat in stats]
+    crop_mirror_norm = ops.CropMirrorNormalize(
+                        device='gpu', output_dtype=types.FLOAT16, 
+                        crop=(size, size), mean=mean, std=std)
+    coin = ops.CoinFlip(probability=0.5)
+
+    def define_graph():    
+        jpegs, labels = inputs(name='Reader')
+        output = crop_mirror_norm(resize(decode(jpegs)), mirror=coin())
+        return [output, labels]
+    return define_graph
+
+def imagenet_valid_graph(data_dir, size, val_xtra_size, mirror=0,
+                interp_type=types.INTERP_TRIANGULAR, 
+                stats=imagenet_stats):
+    inputs = ops.FileReader(file_root=data_dir, random_shuffle=False)
+    decode = ops.ImageDecoder(device='mixed', output_type=types.RGB)
+    resize = ops.Resize(device='gpu', resize_shorter=size+val_xtra_size, 
+                        interp_type=interp_type)
+    mean, std = [[x*255 for x in stat] for stat in stats]
+    crop_mirror_norm = ops.CropMirrorNormalize(
+                        device='gpu', output_dtype=types.FLOAT16,
+                        crop=(size, size), mean=mean, std=std, mirror=mirror)
+    
+    def define_graph():
+        jpegs, labels = inputs(name='Reader')
+        output = crop_mirror_norm(resize(decode(jpegs)))
+        return [output, labels]
+    return define_graph
+
+##########################
+## Models
+##########################
+import fastai2.vision.models
+import fastai2.layers
+import torch.nn as nn
+
+class XResNet(nn.Sequential):
+    def __init__(self, expansion, layers, c_in=3, c_out=1000, 
+                 sa=False, sym=False, act_cls=fastai2.basics.defaults.activation,
+                 ):
+        stem = []
+        sizes = [c_in, 16,32,64] if c_in < 3 else [c_in, 32, 64, 64] 
+        for i in range(3):
+            stem.append(fastai2.layers.ConvLayer(sizes[i], sizes[i+1], stride=2 if i==0 else 1, act_cls=act_cls))
+
+        block_szs = [64//expansion,64,128,256,512] +[256]*(len(layers)-4)
+        blocks = [self._make_layer(expansion, ni=block_szs[i], nf=block_szs[i+1], blocks=l, stride=1 if i==0 else 2,
+                                  sa=sa if i==len(layers)-4 else False, sym=sym, act_cls=act_cls)
+                  for i,l in enumerate(layers)]
+        super().__init__(
+            *stem,
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            *blocks,
+            nn.AdaptiveAvgPool2d(1), fastai2.layers.Flatten(),
+            nn.Linear(block_szs[-1]*expansion, c_out),
+        )
+        fastai2.vision.models.xresnet.init_cnn(self)
+
+    def _make_layer(self, expansion, ni, nf, blocks, stride, sa, sym, act_cls):
+        return nn.Sequential(
+            *[fastai2.layers.ResBlock(expansion, ni if i==0 else nf, nf, stride if i==0 else 1,
+                      sa if i==(blocks-1) else False, sym=sym, act_cls=act_cls)
+              for i in range(blocks)])
+        
+xresnet18 = partial(XResNet, expansion=1, layers=[2,2,2,2])
+xresnet50 = partial(XResNet, expansion=4, layers=[3,4,6,3])
