@@ -103,6 +103,7 @@ def imagenet_valid_graph(data_dir, size, val_xtra_size, mirror=0,
 import fastai2.vision.models
 import fastai2.layers
 import torch.nn as nn
+from functools import partial
 
 class XResNet(nn.Sequential):
     def __init__(self, expansion, layers, c_in=3, c_out=1000, 
@@ -134,3 +135,30 @@ class XResNet(nn.Sequential):
         
 xresnet18 = partial(XResNet, expansion=1, layers=[2,2,2,2])
 xresnet50 = partial(XResNet, expansion=4, layers=[3,4,6,3])
+
+#faster Mish activation
+@torch.jit.script
+def mish_fwd(x):
+    a = torch.exp(x)
+    return x*(1. - 2./(2. + 2*a + a*a))
+
+@torch.jit.script
+def mish_bwd(x):
+    a = torch.exp(x)
+    t = (1. - 2./(2. + 2*a + a*a))
+    return (t + x*(1.-t*t)*(a/(1.+a)))
+
+class MishJitFunc(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        ctx.save_for_backward(x)
+        return mish_fwd(x)
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, = ctx.saved_tensors
+        return mish_bwd(x)*grad_output
+
+class MishJit(nn.Module):
+    def forward(self, x):
+        return MishJitFunc.apply(x)
