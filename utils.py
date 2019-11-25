@@ -162,3 +162,19 @@ class MishJitFunc(torch.autograd.Function):
 class MishJit(nn.Module):
     def forward(self, x):
         return MishJitFunc.apply(x)
+
+##########################################
+## Flat_then_cos schedule for fastai v1
+##########################################
+import fastai.callback, fastai.callbacks
+
+def flat_then_cosine_sched(learn, n_batch, lr, pct_start):
+    return fastai.callbacks.GeneralScheduler(learn, phases=[
+        fastai.callbacks.TrainingPhase(pct_start*n_batch).schedule_hp('lr', lr),
+        fastai.callbacks.TrainingPhase((1-pct_start)*n_batch).schedule_hp('lr', lr, anneal=fastai.callback.annealing_cos)     
+    ])
+
+def fit_flat_cos(learn, n_epoch, lr, pct_start):
+    learn.fit(n_epoch, callbacks=[
+        flat_then_cosine_sched(learn, len(learn.data.train_dl) * n_epoch, lr=lr, pct_start=pct_start)])
+    return learn
