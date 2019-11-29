@@ -221,7 +221,7 @@ def group_by_key(items, func=(lambda v: v)):
 
 def params_with_parents(module):
     for m in module.children():
-        yield from classify_params(m)
+        yield from params_with_parents(m)
     for name, param in module.named_parameters(recurse=False):
         yield(module, name, param)
 
