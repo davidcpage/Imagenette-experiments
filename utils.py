@@ -38,6 +38,12 @@ class Chain():
     def __iter__(self): return chain(*self.dls)
     def __len__(self): return sum(len(dl) for dl in self.dls)
 
+class Map():
+    def __init__(self, fn, dl):
+        self.fn, self.dl, self.device = fn, dl, dl.device
+    def __iter__(self): return map(self.fn, self.dl)
+    def __len__(self): return len(self.dl)
+
 class MockV1DataBunch(): 
     #adaptor to fastai v1 databunch api
     def __init__(self, train_dl, valid_dl, path='dummy', empty_val=False):
@@ -178,3 +184,48 @@ def fit_flat_cos(learn, n_epoch, lr, pct_start):
     learn.fit(n_epoch, callbacks=[
         flat_then_cosine_sched(learn, len(learn.data.train_dl) * n_epoch, lr=lr, pct_start=pct_start)])
     return learn
+
+##########################################
+## General utils
+##########################################
+
+import time
+from collections import defaultdict 
+
+class Timer():
+    def __init__(self, synch=None):
+        self.synch = synch or (lambda: None)
+        self.synch()
+        self.times = [time.perf_counter()]
+        self.total_time = 0.0
+
+    def __call__(self, include_in_total=True):
+        self.synch()
+        self.times.append(time.perf_counter())
+        delta_t = self.times[-1] - self.times[-2]
+        if include_in_total:
+            self.total_time += delta_t
+        return delta_t
+
+union = lambda *dicts: {k: v for d in dicts for (k, v) in d.items()}
+
+def group_by_key(items, func=(lambda v: v)):
+    res = defaultdict(list)
+    for k, v in items: 
+        res[k].append(v) 
+    return {k: func(v) for k, v in res.items()}
+
+##########################################
+## Pytorch utils
+##########################################
+
+def params_with_parents(module):
+    for m in module.children():
+        yield from classify_params(m)
+    for name, param in module.named_parameters(recurse=False):
+        yield(module, name, param)
+
+def split_params(func, module):
+    return group_by_key((func(mod, name), param) for (mod, name, param) in params_with_parents(module))
+
+
