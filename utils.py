@@ -124,8 +124,8 @@ class XResNet(nn.Sequential):
 
     def _make_layer(self, expansion, ni, nf, blocks, stride, sa, sym, act_cls):
         return nn.Sequential(
-            *[fastai2.layers.ResBlock(expansion, ni if i==0 else nf, nf, stride if i==0 else 1,
-                      sa if i==(blocks-1) else False, sym=sym, act_cls=act_cls)
+            *[fastai2.layers.ResBlock(expansion, ni if i==0 else nf, nf, stride=stride if i==0 else 1,
+                      sa=sa if i==(blocks-1) else False, sym=sym, act_cls=act_cls)
               for i in range(blocks)])
         
 xresnet18 = partial(XResNet, expansion=1, layers=[2,2,2,2])
