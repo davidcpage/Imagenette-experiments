@@ -44,18 +44,7 @@ class Map():
     def __iter__(self): return map(self.fn, self.dl)
     def __len__(self): return len(self.dl)
 
-class MockV1DataBunch(): 
-    #adaptor to fastai v1 databunch api
-    def __init__(self, train_dl, valid_dl, path='dummy', empty_val=False):
-        self.train_dl = train_dl
-        if not hasattr(train_dl, 'dataset'): train_dl.dataset = 'dummy'
-        self.valid_dl = valid_dl
-        if not hasattr(valid_dl, 'dataset'): valid_dl.dataset = 'dummy'
-        self.path = path
-        self.device = train_dl.device
-        self.empty_val = empty_val
-    def add_tfm(self, tfm): pass
-    def remove_tfm(self, tfm): pass
+
 
 ##########################
 ## DALI Imagenet Pipeline
@@ -228,4 +217,37 @@ def params_with_parents(module):
 def split_params(func, module):
     return group_by_key((func(mod, name), param) for (mod, name, param) in params_with_parents(module))
 
+##########################################
+## Fastai v1 adaptors
+##########################################
 
+class MockV1DataBunch(): 
+    #adaptor to fastai v1 databunch api
+    def __init__(self, train_dl, valid_dl, path='dummy', empty_val=False):
+        self.train_dl = train_dl
+        if not hasattr(train_dl, 'dataset'): train_dl.dataset = 'dummy'
+        self.valid_dl = valid_dl
+        if not hasattr(valid_dl, 'dataset'): valid_dl.dataset = 'dummy'
+        self.path = path
+        self.device = train_dl.device
+        self.empty_val = empty_val
+    def add_tfm(self, tfm): pass
+    def remove_tfm(self, tfm): pass
+
+import fastai.train
+class FuncScheduler(fastai.train.LearnerCallback):
+    def __init__(self, func, learn, n_epoch):
+        super().__init__(learn)
+        self.learn, self.func, self.n_epoch = learn, func, n_epoch
+        
+    def on_train_begin(self, **kwargs):
+        self.step()
+
+    def on_batch_end(self, train, **kwargs):
+        if train: self.step()
+
+    def step(self):
+        if not hasattr(self, 'iter_vals'):
+            n_batch = len(self.learn.data.train_dl)*self.n_epoch 
+            self.iter_vals = iter(self.func(x/n_batch) for x in range(0, n_batch+1))
+        self.learn.opt.set_stat('lr', next(self.iter_vals))
