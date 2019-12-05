@@ -251,3 +251,117 @@ class FuncScheduler(fastai.train.LearnerCallback):
             n_batch = len(self.learn.data.train_dl)*self.n_epoch 
             self.iter_vals = iter(self.func(x/n_batch) for x in range(0, n_batch+1))
         self.learn.opt.set_stat('lr', next(self.iter_vals))
+
+#####################
+## network visualisation (requires pydot)
+#####################
+class ColorMap(dict):
+    palette = ['#'+x for x in (
+        'bebada,ffffb3,fb8072,8dd3c7,80b1d3,fdb462,b3de69,fccde5,bc80bd,ccebc5,ffed6f,1f78b4,33a02c,e31a1c,ff7f00,'
+        '4dddf8,e66493,b07b87,4e90e3,dea05e,d0c281,f0e189,e9e8b1,e0eb71,bbd2a4,6ed641,57eb9c,3ca4d4,92d5e7,b15928'
+    ).split(',')]
+
+    def __missing__(self, key):
+        self[key] = self.palette[len(self) % len(self.palette)]
+        return self[key]
+
+    def _repr_html_(self):
+        css = (
+        '.pill {'
+            'margin:2px; border-width:1px; border-radius:9px; border-style:solid;'
+            'display:inline-block; width:100px; height:15px; line-height:15px;'
+        '}'
+        '.pill_text {'
+            'width:90%; margin:auto; font-size:9px; text-align:center; overflow:hidden;'
+        '}'
+        )
+        s = '<div class=pill style="background-color:{}"><div class=pill_text>{}</div></div>'
+        return '<style>'+css+'</style>'+''.join((s.format(color, text) for text, color in self.items()))
+
+sep = '/'
+
+def split(path):
+    i = path.rfind(sep) + 1
+    return path[:i].rstrip(sep), path[i:]
+
+def make_dot_graph(nodes, edges, direction='LR', **kwargs):
+    from pydot import Dot, Cluster, Node, Edge
+    class Subgraphs(dict):
+        def __missing__(self, path):
+            parent, label = split(path)
+            subgraph = Cluster(path, label=label, style='rounded, filled', fillcolor='#77777744')
+            self[parent].add_subgraph(subgraph)
+            return subgraph
+    g = Dot(rankdir=direction, directed=True, **kwargs)
+    g.set_node_defaults(
+        shape='box', style='rounded, filled', fillcolor='#ffffff')
+    subgraphs = Subgraphs({'': g})
+    for path, attr in nodes:
+        parent, label = split(path)
+        subgraphs[parent].add_node(
+            Node(name=path, label=label, **attr))
+    for src, dst, attr in edges:
+        g.add_edge(Edge(src, dst, **attr))
+    return g
+
+def to_dict(inputs):
+    return dict(enumerate(inputs)) if isinstance(inputs, list) else inputs
+
+class DotGraph():
+    def __init__(self, graph, size=15, direction='LR'):
+        self.nodes = [(k, v) for k, (v,_) in graph.items()]
+        self.edges = [(src, dst, {'tooltip': name}) for dst, (_, inputs) in graph.items() for name, src in to_dict(inputs).items()]
+        self.size, self.direction = size, direction
+
+    def dot_graph(self, **kwargs):
+        return make_dot_graph(self.nodes, self.edges, size=self.size, direction=self.direction,  **kwargs)
+
+    def svg(self, **kwargs):
+        return self.dot_graph(**kwargs).create(format='svg').decode('utf-8')
+    try:
+        import pydot
+        _repr_svg_ = svg
+    except ImportError:
+        def __repr__(self): return 'pydot is needed for network visualisation'
+
+def map_(func, vals):
+    return [func(x) for x in vals] if isinstance(vals, list) else {k: func(v) for k,v in vals.items()}
+
+def pipeline(graph):
+    return((name, (node if isinstance(node, tuple) else (node, [-1]))) for (name, node) in graph.items() if node is not None)
+
+def _resolve_inputs(items, idx_lookup):
+    return ((name, (value, map_(partial(idx_lookup, j=j), inputs))) for (j, (name, (value, inputs))) in enumerate(items)) 
+
+def iter_nodes(graph):
+    keys = list(graph.keys())
+    return _resolve_inputs(pipeline(graph), (lambda i, j: keys[i+j] if isinstance(i, int) and (i+j)>=0 else i))
+
+external_inputs = lambda graph: list({i:None for name,(value, inputs) in iter_nodes(graph) for i in inputs if i not in graph}.keys()) #preserve order
+
+def bind(graph, bindings):
+    if isinstance(bindings, list): bindings = dict(zip(external_inputs(graph), bindings))
+    return dict(_resolve_inputs(pipeline(graph), (lambda i, j: i if isinstance(i, int) and i+j>=0 else bindings.get(i, i))))
+
+add_scope = lambda pfx, graph: {f'{pfx}/{name}': (value, map_((lambda i: f'{pfx}/{i}' if i in graph else i), inputs)) for (name, (value, inputs)) in pipeline(graph)}
+
+def explode(graph, max_levels=-1):
+    if max_levels == 0: return graph
+    def iter_(graph):
+        for name, (value, inputs) in pipeline(graph):
+            if isinstance(value, dict):
+                yield from bind(add_scope(name, explode(value, max_levels-1)), inputs).items()
+            else:                
+                yield (name, (value, inputs))
+    return dict(iter_(graph))  
+
+walk = lambda dct, key: walk(dct, dct[key]) if key in dct else key
+ 
+def single_input_(node_name, inputs):
+    inputs = [i for i in inputs if i != node_name]
+    if len(inputs) != 1: raise Exception(f'Can only remove nodes with a single input {node_name} has {len(inputs)} inputs: ({inputs})')
+    return inputs[0] if isinstance(inputs, list) else list(inputs.values())[0]
+
+def remove_nodes(graph, nodes):  
+    remap = {name: single_input_(name, i) for name, (v, i) in iter_nodes(graph) if name in nodes}
+    return dict(_resolve_inputs(((n,vi) for (n,vi) in iter_nodes(graph) if n not in nodes), (lambda i,j: walk(remap, i))))
