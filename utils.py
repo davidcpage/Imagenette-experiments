@@ -328,7 +328,7 @@ def map_(func, vals):
     return [func(x) for x in vals] if isinstance(vals, list) else {k: func(v) for k,v in vals.items()}
 
 def pipeline(graph):
-    return((name, (node if isinstance(node, tuple) else (node, [-1]))) for (name, node) in graph.items() if node is not None)
+    return((name, (node if isinstance(node, tuple) else (node, [-1]))) for (name, node) in graph.items())
 
 def _resolve_inputs(items, idx_lookup):
     return ((name, (value, map_(partial(idx_lookup, j=j), inputs))) for (j, (name, (value, inputs))) in enumerate(items)) 
@@ -345,16 +345,6 @@ def bind(graph, bindings):
 
 add_scope = lambda pfx, graph: {f'{pfx}/{name}': (value, map_((lambda i: f'{pfx}/{i}' if i in graph else i), inputs)) for (name, (value, inputs)) in pipeline(graph)}
 
-def explode(graph, max_levels=-1):
-    if max_levels == 0: return graph
-    def iter_(graph):
-        for name, (value, inputs) in pipeline(graph):
-            if isinstance(value, dict):
-                yield from bind(add_scope(name, explode(value, max_levels-1)), inputs).items()
-            else:                
-                yield (name, (value, inputs))
-    return dict(iter_(graph))  
-
 walk = lambda dct, key: walk(dct, dct[key]) if key in dct else key
  
 def single_input_(node_name, inputs):
@@ -365,3 +355,19 @@ def single_input_(node_name, inputs):
 def remove_nodes(graph, nodes):  
     remap = {name: single_input_(name, i) for name, (v, i) in iter_nodes(graph) if name in nodes}
     return dict(_resolve_inputs(((n,vi) for (n,vi) in iter_nodes(graph) if n not in nodes), (lambda i,j: walk(remap, i))))
+
+class Redirect:
+    pass
+
+def explode(graph, max_levels=-1):
+    if max_levels == 0: return graph
+    def iter_(graph):
+        for name, (value, inputs) in pipeline(graph):
+            if hasattr(value, 'graph'): value = value.graph
+            if isinstance(value, dict):
+                yield from bind(add_scope(name, explode(value, max_levels-1)), inputs).items()
+                yield (name, (Redirect, [-1]))
+            else:                
+                yield (name, (value, inputs))
+    res = dict(iter_(graph))
+    return remove_nodes(res, [k for k,(v,i) in res.items() if v is Redirect])
