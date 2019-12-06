@@ -324,50 +324,49 @@ class DotGraph():
     except ImportError:
         def __repr__(self): return 'pydot is needed for network visualisation'
 
-def map_(func, vals):
-    return [func(x) for x in vals] if isinstance(vals, list) else {k: func(v) for k,v in vals.items()}
-
-def pipeline(graph):
-    return((name, (node if isinstance(node, tuple) else (node, [-1]))) for (name, node) in graph.items())
-
-def _resolve_inputs(items, idx_lookup):
-    return ((name, (value, map_(partial(idx_lookup, j=j), inputs))) for (j, (name, (value, inputs))) in enumerate(items)) 
-
 def iter_nodes(graph):
+ #   graph = {name: node for (name, node) in graph.items() if node is not None}
     keys = list(graph.keys())
-    return _resolve_inputs(pipeline(graph), (lambda i, j: keys[i+j] if isinstance(i, int) and (i+j)>=0 else i))
+    if not all(isinstance(k, str) for k in keys):
+        raise Exception('Node names must be strings.')
+    return ((name, (node if isinstance(node, tuple) else (node, [0 if j is 0 else keys[j-1]]))) for (j, (name, node)) in enumerate(graph.items()))
 
-external_inputs = lambda graph: list({i:None for name,(value, inputs) in iter_nodes(graph) for i in inputs if i not in graph}.keys()) #preserve order
+map_ = lambda func, vals: [func(x) for x in vals] if isinstance(vals, list) else {k: func(v) for k,v in vals.items()}
+pfx = lambda prefix, name: f'{prefix}/{name}'
+external_inputs = lambda graph: set(i for name, (value, inputs) in iter_nodes(graph) for i in inputs if i not in graph)
 
-def bind(graph, bindings):
-    if isinstance(bindings, list): bindings = dict(zip(external_inputs(graph), bindings))
-    return dict(_resolve_inputs(pipeline(graph), (lambda i, j: i if isinstance(i, int) and i+j>=0 else bindings.get(i, i))))
-
-add_scope = lambda pfx, graph: {f'{pfx}/{name}': (value, map_((lambda i: f'{pfx}/{i}' if i in graph else i), inputs)) for (name, (value, inputs)) in pipeline(graph)}
+def bindings(graph, inputs):
+    if isinstance(inputs, list): inputs = dict(enumerate(inputs))
+    required_inputs = external_inputs(graph)
+    missing = [k for k in required_inputs if k not in inputs]
+    if len(missing): 
+            raise Exception(f'Required inputs {missing} are missing from inputs {inputs} for graph {graph}')
+    return inputs
 
 walk = lambda dct, key: walk(dct, dct[key]) if key in dct else key
- 
-def single_input_(node_name, inputs):
-    inputs = [i for i in inputs if i != node_name]
-    if len(inputs) != 1: raise Exception(f'Can only remove nodes with a single input {node_name} has {len(inputs)} inputs: ({inputs})')
-    return inputs[0] if isinstance(inputs, list) else list(inputs.values())[0]
 
-def remove_nodes(graph, nodes):  
-    remap = {name: single_input_(name, i) for name, (v, i) in iter_nodes(graph) if name in nodes}
-    return dict(_resolve_inputs(((n,vi) for (n,vi) in iter_nodes(graph) if n not in nodes), (lambda i,j: walk(remap, i))))
-
-class Redirect:
-    pass
+from functools import singledispatch
+@singledispatch
+def to_graph(value): 
+    return value
 
 def explode(graph, max_levels=-1):
-    if max_levels == 0: return graph
+    graph = to_graph(graph)
+    if max_levels==0 or not isinstance(graph, dict): return graph
+    redirects = {}
     def iter_(graph):
-        for name, (value, inputs) in pipeline(graph):
-            if hasattr(value, 'graph'): value = value.graph
+        for name, (value, inputs) in iter_nodes(graph):
+            value = explode(value, max_levels-1)
             if isinstance(value, dict):
-                yield from bind(add_scope(name, explode(value, max_levels-1)), inputs).items()
-                yield (name, (Redirect, [-1]))
-            else:                
+                #special case empty dict
+                if not len(value): 
+                    if len(inputs) != 1: raise Exception('Empty graphs (pass-thrus) should have exactly one input')
+                    redirects[name] = inputs[0] #redirect to input
+                else:
+                    bindings_dict = bindings(value, inputs)
+                    for n, (val, ins) in iter_nodes(value):
+                        yield (pfx(name, n), (val, map_((lambda i: bindings_dict.get(i, pfx(name, i))), ins)))
+                    redirects[name] = pfx(name, n) #redirect to previous node
+            else:
                 yield (name, (value, inputs))
-    res = dict(iter_(graph))
-    return remove_nodes(res, [k for k,(v,i) in res.items() if v is Redirect])
+    return {name: (value, map_((lambda i: walk(redirects, i)), inputs)) for name, (value, inputs) in iter_(graph)}
