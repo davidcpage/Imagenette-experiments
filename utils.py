@@ -340,7 +340,7 @@ def bindings(graph, inputs):
     required_inputs = external_inputs(graph)
     missing = [k for k in required_inputs if k not in inputs]
     if len(missing): 
-            raise Exception(f'Required inputs {missing} are missing from inputs {inputs} for graph {graph}')
+        raise Exception(f'Required inputs {missing} are missing from inputs {inputs} for graph {graph}')
     return inputs
 
 walk = lambda dct, key: walk(dct, dct[key]) if key in dct else key
@@ -370,3 +370,69 @@ def explode(graph, max_levels=-1):
             else:
                 yield (name, (value, inputs))
     return {name: (value, map_((lambda i: walk(redirects, i)), inputs)) for name, (value, inputs) in iter_(graph)}
+
+class Network(nn.Module):
+    colors = ColorMap()
+    def __init__(self, graph, cache_activations=False):
+        super().__init__()
+        self.cache_activations = cache_activations
+        self.graph = {k: (Network(v) if isinstance(v, dict) else v,i) for (k, (v,i)) in iter_nodes(to_graph(graph))}
+        
+        for path, (val, _) in iter_nodes(self.graph): 
+            setattr(self, path.replace('/', '_'), val)
+    
+    def forward(self, *args):
+        prev = args[0]
+        outputs = dict(enumerate(args))
+        for k, (node, inputs) in iter_nodes(self.graph):
+            if k not in outputs: 
+                prev = outputs[k] = node(*[outputs[x] for x in inputs])
+        if self.cache_activations: self.cache = outputs
+        return prev
+
+    def draw(self, **kwargs):
+        return DotGraph({p: ({'fillcolor': self.colors[type(v).__name__], 'tooltip': str(v)}, inputs) for p, (v, inputs) in iter_nodes(to_graph(self))}, **kwargs)
+
+    def explode(self, max_levels=-1):
+        return Network(explode(self, max_levels))
+
+@to_graph.register(Network)
+def f(x): 
+    return x.graph    
+
+short_names_ = {
+    nn.Conv2d: 'Conv',
+    nn.BatchNorm2d: 'Norm',
+    nn.ReLU: 'Actn',
+    nn.AdaptiveAvgPool2d: 'Avgpool',
+    nn.AdaptiveMaxPool2d: 'Maxpool',
+    nn.AvgPool2d: 'Avgpool',
+    nn.MaxPool2d: 'Maxpool',
+    nn.Identity: 'Id',
+}
+
+def short_name(typ):
+    return short_names_.get(typ, typ.__name__)
+
+@to_graph.register(nn.Sequential)
+def f(x):
+    if all([(str(i) == k) for i,k in enumerate(x._modules.keys())]):
+        mods = {f'{short_name(type(v))}_{k}': v for k,v in x._modules.items()}
+    else:
+        mods = x._modules
+    return dict(iter_nodes(mods))
+
+class Mul(nn.Module):
+    def forward(self, x, y): return x * y
+
+class Add(nn.Module):
+    def forward(self, x, y): return x + y
+
+class SplitMerge(Network):
+    def __init__(self, branches, merge=Add, **post):
+        if isinstance(branches, list):
+            branches = {f'branch{i}': branch for i in enumerate(branches)}
+        graph = union({'in': nn.Identity()}, {k: (v, ['in']) for k,v in branches.items()})
+        graph[short_name(merge)] = (merge(), list(branches.keys()))
+        if post: graph = union(graph, post)
+        super().__init__(graph)
