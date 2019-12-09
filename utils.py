@@ -45,7 +45,6 @@ class Map():
     def __len__(self): return len(self.dl)
 
 
-
 ##########################
 ## DALI Imagenet Pipeline
 ##########################
@@ -216,6 +215,10 @@ def params_with_parents(module):
 
 def split_params(func, module):
     return group_by_key((func(mod, name), param) for (mod, name, param) in params_with_parents(module))
+
+def smoothed_acc(logits, targets, beta=3.): #replace argmax with soft(arg)max
+    return torch.mean(nn.functional.softmax(logits*beta, dim=-1)[torch.arange(0, targets.size(0), device=device), targets])
+
 
 ##########################################
 ## Fastai v1 adaptors
@@ -431,7 +434,7 @@ class Add(nn.Module):
 class SplitMerge(Network):
     def __init__(self, branches, merge=Add, **post):
         if isinstance(branches, list):
-            branches = {f'branch{i}': branch for i in enumerate(branches)}
+            branches = {f'branch{i}': branch for i, branch in enumerate(branches)}
         graph = union({'in': nn.Identity()}, {k: (v, ['in']) for k,v in branches.items()})
         graph[short_name(merge)] = (merge(), list(branches.keys()))
         if post: graph = union(graph, post)
