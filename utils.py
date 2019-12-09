@@ -217,7 +217,7 @@ def split_params(func, module):
     return group_by_key((func(mod, name), param) for (mod, name, param) in params_with_parents(module))
 
 def smoothed_acc(logits, targets, beta=3.): #replace argmax with soft(arg)max
-    return torch.mean(nn.functional.softmax(logits*beta, dim=-1)[torch.arange(0, targets.size(0), device=device), targets])
+    return torch.mean(nn.functional.softmax(logits*beta, dim=-1)[torch.arange(0, targets.size(0), device=logits.device), targets])
 
 
 ##########################################
