@@ -386,11 +386,11 @@ class Network(nn.Module):
     
     def forward(self, *args):
         prev = args[0]
-        outputs = dict(enumerate(args))
+        outputs = self.cache = dict(enumerate(args))
         for k, (node, inputs) in iter_nodes(self.graph):
             if k not in outputs: 
                 prev = outputs[k] = node(*[outputs[x] for x in inputs])
-        if self.cache_activations: self.cache = outputs
+        if not self.cache_activations: self.cache = None
         return prev
 
     def draw(self, **kwargs):
@@ -439,3 +439,11 @@ class SplitMerge(Network):
         graph[short_name(merge)] = (merge(), list(branches.keys()))
         if post: graph = union(graph, post)
         super().__init__(graph)
+
+import collections
+def sequential(layers):
+    if isinstance(layers, (list, tuple)):
+        return nn.Sequential(*[x for x in layers if x is not None])    
+    return nn.Sequential(collections.OrderedDict(
+        (k,v) for k,v in layers.items() if v is not None
+    ))
