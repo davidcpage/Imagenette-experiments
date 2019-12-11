@@ -403,7 +403,7 @@ class Network(nn.Module):
 def f(x): 
     return x.graph    
 
-short_names_ = {
+short_names = {
     nn.Conv2d: 'Conv',
     nn.BatchNorm2d: 'Norm',
     nn.ReLU: 'Actn',
@@ -415,7 +415,7 @@ short_names_ = {
 }
 
 def short_name(typ):
-    return short_names_.get(typ, typ.__name__)
+    return short_names.get(typ, typ.__name__)
 
 @to_graph.register(nn.Sequential)
 def f(x):
