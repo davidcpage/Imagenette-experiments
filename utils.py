@@ -351,10 +351,13 @@ walk = lambda dct, key: walk(dct, dct[key]) if key in dct else key
 from functools import singledispatch
 @singledispatch
 def to_graph(value): 
-    return value
+    raise NotImplementedError(f'type = {type(value)}')
+
+@to_graph.register(dict)
+def f(x): return x
 
 def explode(graph, max_levels=-1):
-    graph = to_graph(graph)
+    if hasattr(graph, '_graph'): graph = graph._graph
     if max_levels==0 or not isinstance(graph, dict): return graph
     redirects = {}
     def iter_(graph):
@@ -377,17 +380,27 @@ def explode(graph, max_levels=-1):
 class Network(nn.Module):
     colors = ColorMap()
     def __init__(self, graph, cache_activations=False):
+        self._graph = to_graph(graph)
         super().__init__()
         self.cache_activations = cache_activations
-        self.graph = {k: (Network(v) if isinstance(v, dict) else v,i) for (k, (v,i)) in iter_nodes(to_graph(graph))}
-        
-        for path, (val, _) in iter_nodes(self.graph): 
-            setattr(self, path.replace('/', '_'), val)
+        for path, (val, _) in iter_nodes(self._graph): 
+            setattr(self, path.replace('/', '__'), val)
     
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        path = name.replace('__', '/')
+        if path in self._graph:
+            old_val = self._graph[path]
+            if isinstance(old_val, tuple):
+                _, inputs = old_val
+                self._graph[path] = (value, inputs)
+            else:
+                self._graph[path] = value
+
     def forward(self, *args):
         prev = args[0]
         outputs = self.cache = dict(enumerate(args))
-        for k, (node, inputs) in iter_nodes(self.graph):
+        for k, (node, inputs) in iter_nodes(self._graph):
             if k not in outputs: 
                 prev = outputs[k] = node(*[outputs[x] for x in inputs])
         if not self.cache_activations: self.cache = None
@@ -398,10 +411,20 @@ class Network(nn.Module):
 
     def explode(self, max_levels=-1):
         return Network(explode(self, max_levels))
+        
+def to_network(module, max_levels=-1):
+    net = Network(module)
+    if max_levels == 0: return net
+    for k, mod in net.named_children():
+        try: 
+            setattr(net, k, to_network(mod, max_levels-1))
+        except NotImplementedError:
+            pass
+    return net
 
 @to_graph.register(Network)
 def f(x): 
-    return x.graph    
+    return x._graph    
 
 short_names = {
     nn.Conv2d: 'Conv',
@@ -423,7 +446,7 @@ def f(x):
         mods = {f'{short_name(type(v))}_{k}': v for k,v in x._modules.items()}
     else:
         mods = x._modules
-    return dict(iter_nodes(mods))
+    return mods
 
 class Mul(nn.Module):
     def forward(self, x, y): return x * y
