@@ -460,14 +460,28 @@ class Mul(nn.Module):
 class Add(nn.Module):
     def forward(self, x, y): return x + y
 
-class SplitMerge(Network):
-    def __init__(self, branches, merge=Add, **post):
+class SplitMerge(nn.Module):
+    def __init__(self, branches, merge=Add, post=None):
+        super().__init__()
         if isinstance(branches, list):
             branches = {f'branch{i}': branch for i, branch in enumerate(branches)}
-        graph = union({'in': nn.Identity()}, {k: (v, ['in']) for k,v in branches.items()})
-        graph[short_name(merge)] = (merge(), list(branches.keys()))
-        if post: graph = union(graph, post)
-        super().__init__(graph)
+        self.branches = branches
+        self.merge, self.post = merge(), post
+
+    def forward(self, x):
+        branch_outputs = [branch(x) for x in self.branches.values()]
+        x = self.merge(*branch_outputs)
+        if self.post is not None:
+            x = self.post(x)
+        return x
+
+@to_graph.register(SplitMerge)
+def f(self):
+    graph = union({'in': nn.Identity()}, {k: (v, ['in']) for k,v in self.branches.items()})
+    graph[short_name(type(self.merge))] = (self.merge, list(self.branches.keys()))
+    if self.post:
+        graph[short_name(type(self.post))] = self.post
+    return graph
 
 import collections
 def sequential(layers):
