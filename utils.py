@@ -465,11 +465,13 @@ class SplitMerge(nn.Module):
         super().__init__()
         if isinstance(branches, list):
             branches = {f'branch{i}': branch for i, branch in enumerate(branches)}
+        for name, branch in branches.items():
+            self.add_module(name, branch)
         self.branches = branches
         self.merge, self.post = merge(), post
 
     def forward(self, x):
-        branch_outputs = [branch(x) for x in self.branches.values()]
+        branch_outputs = [branch(x) for branch in self.branches.values()]
         x = self.merge(*branch_outputs)
         if self.post is not None:
             x = self.post(x)
