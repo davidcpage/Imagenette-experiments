@@ -314,7 +314,7 @@ class DotGraph():
     def __init__(self, graph, size=15, direction='LR'):
         self.nodes = [(k, v) for k, (v,_) in graph.items()]
         self.edges = [(src, dst, {'tooltip': name}) for dst, (_, inputs) in graph.items() for name, src in to_dict(inputs).items()]
-        self.size, self.direction = size, direction
+        self.size, self.direction = size or 8+len(graph)/2, direction
 
     def dot_graph(self, **kwargs):
         return make_dot_graph(self.nodes, self.edges, size=self.size, direction=self.direction,  **kwargs)
@@ -356,13 +356,17 @@ def to_graph(value):
 @to_graph.register(dict)
 def f(x): return x
 
-def explode(graph, max_levels=-1):
-    if hasattr(graph, '_graph'): graph = graph._graph
+def maybe_graph(x):
+    try: return to_graph(x)
+    except NotImplementedError: return x
+
+def explode(graph, max_levels=-1, convert=maybe_graph):
+    graph = convert(graph)
     if max_levels==0 or not isinstance(graph, dict): return graph
     redirects = {}
     def iter_(graph):
         for name, (value, inputs) in iter_nodes(graph):
-            value = explode(value, max_levels-1)
+            value = explode(value, max_levels-1, convert=convert)
             if isinstance(value, dict):
                 #special case empty dict
                 if not len(value): 
@@ -410,7 +414,9 @@ class Network(nn.Module):
         return DotGraph({p: ({'fillcolor': self.colors[type(v).__name__], 'tooltip': str(v)}, inputs) for p, (v, inputs) in iter_nodes(to_graph(self))}, **kwargs)
 
     def explode(self, max_levels=-1):
-        return Network(explode(self, max_levels))
+        convert = lambda x: to_graph(x) if isinstance(x, Network) else x
+        return Network(explode(self, max_levels, convert=convert))
+
         
 def to_network(module, max_levels=-1):
     net = Network(module)
