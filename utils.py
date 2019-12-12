@@ -314,7 +314,7 @@ class DotGraph():
     def __init__(self, graph, size=None, direction='LR'):
         self.nodes = [(k, v) for k, (v,_) in graph.items()]
         self.edges = [(src, dst, {'tooltip': name}) for dst, (_, inputs) in graph.items() for name, src in to_dict(inputs).items()]
-        self.size, self.direction = size or 8+len(graph)/2, direction
+        self.size, self.direction = size or 8+len(graph)/3, direction
 
     def dot_graph(self, **kwargs):
         return make_dot_graph(self.nodes, self.edges, size=self.size, direction=self.direction,  **kwargs)
